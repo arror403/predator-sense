@@ -1359,11 +1359,32 @@ fn cover_logo_packet(
     )
 }
 
-fn reapply_lighting(config_path: &Path) -> AppResult<bool> {
+/// What a single [`reapply_lighting`] attempt achieved.
+///
+/// Split out from the old `bool` so the daemon can tell "this chassis has no
+/// ENE controller at all" apart from "the controller is there but did not
+/// answer yet". The first is permanent and worth one calm line; the second is
+/// the transient the retries exist for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LightingRestore {
+    /// Everything the config asked for was written (or there was nothing).
+    Done,
+    /// No ENEK5130 on this machine. Every Chicony-keyboard chassis (PH16-71
+    /// and the Helios 300 generation) and every 2024+ Sunrex/Darfon board
+    /// lands here - retrying cannot conjure a controller that is not fitted.
+    NoController,
+    /// Controller present, but target discovery came back empty and the
+    /// config wants a cover logo - worth another attempt.
+    Incomplete,
+}
+
+fn reapply_lighting(config_path: &Path) -> AppResult<LightingRestore> {
     let config = match fs::read(config_path) {
         Ok(data) => serde_json::from_slice::<Config>(&data)
             .map_err(|error| format!("configuração de iluminação inválida: {error}"))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LightingRestore::Done)
+        }
         Err(error) => {
             return Err(format!(
                 "não foi possível ler {}: {error}",
@@ -1373,10 +1394,10 @@ fn reapply_lighting(config_path: &Path) -> AppResult<bool> {
     };
     let has_dynamic_keyboard = !config.rgb_is_static && config.rgb_dynamic_last.is_some();
     if config.rgb_static_zones.is_empty() && config.cover_logo.is_none() && !has_dynamic_keyboard {
-        return Ok(true);
+        return Ok(LightingRestore::Done);
     }
     let Some(device) = find_enek5130() else {
-        return Ok(false);
+        return Ok(LightingRestore::NoController);
     };
     let file = OpenOptions::new()
         .read(true)
@@ -1413,7 +1434,11 @@ fn reapply_lighting(config_path: &Path) -> AppResult<bool> {
             }
         }
     }
-    Ok(!(discovery_failed && config.cover_logo.is_some()))
+    if discovery_failed && config.cover_logo.is_some() {
+        Ok(LightingRestore::Incomplete)
+    } else {
+        Ok(LightingRestore::Done)
+    }
 }
 
 fn restore_lighting_with_retries(config_path: &Path, logger: &mut Logger) -> bool {
@@ -1423,9 +1448,20 @@ fn restore_lighting_with_retries(config_path: &Path, logger: &mut Logger) -> boo
             std::thread::sleep(Duration::from_secs(delay));
         }
         match reapply_lighting(config_path) {
-            Ok(true) => return true,
-            Ok(false) => {
-                last_error = Some("controlador ou descoberta de alvos indisponível".into())
+            Ok(LightingRestore::Done) => return true,
+            // Not a failure: this chassis simply has no ENE controller, so
+            // this path has nothing to drive. Retrying would sleep through
+            // every delay and then log an error on every boot and every
+            // resume, on every Chicony and Sunrex/Darfon machine.
+            Ok(LightingRestore::NoController) => {
+                logger.info(
+                    "Sem controlador ENEK5130 nesta máquina; \
+                     restauração da iluminação por HID não se aplica",
+                );
+                return false;
+            }
+            Ok(LightingRestore::Incomplete) => {
+                last_error = Some("descoberta de alvos indisponível".into())
             }
             Err(error) => last_error = Some(error),
         }
