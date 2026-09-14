@@ -104,10 +104,36 @@ fn desired_profile(
     current: Option<PowerProfile>,
     battery_pct: Option<u32>,
 ) -> Option<PowerProfile> {
+    desired_profile_for(
+        ac,
+        current,
+        battery_pct,
+        PowerProfile::from_index(AC_PROFILE.load(Ordering::Relaxed)),
+        PowerProfile::from_index(BATTERY_PROFILE.load(Ordering::Relaxed)),
+    )
+}
+
+/// [`desired_profile`] with the configured targets passed in, so the rule can
+/// be tested without the process-wide atomics.
+///
+/// A machine already sitting on the configured target is compliant, whatever
+/// tier that target is. Without that rule an AC target of Balanced (or a
+/// battery target of Performance) was never recognised as satisfied: the
+/// policy re-applied the very profile the machine was already in every time
+/// the grace window ran out, and each re-apply rewrote the fan preset and
+/// blinked the mode key - a visible flash roughly once a minute.
+fn desired_profile_for(
+    ac: bool,
+    current: Option<PowerProfile>,
+    battery_pct: Option<u32>,
+    ac_target: PowerProfile,
+    battery_target: PowerProfile,
+) -> Option<PowerProfile> {
     if ac {
         return match current {
             Some(PowerProfile::Performance) | Some(PowerProfile::Turbo) => None,
-            _ => Some(PowerProfile::from_index(AC_PROFILE.load(Ordering::Relaxed))),
+            Some(current) if current == ac_target => None,
+            _ => Some(ac_target),
         };
     }
     if battery_pct.is_some_and(|pct| pct < CRITICAL_BATTERY_PCT) {
@@ -124,9 +150,8 @@ fn desired_profile(
         // strictly more conservative than the two profiles this policy
         // already leaves alone on battery, never less.
         Some(PowerProfile::Balanced) | Some(PowerProfile::Quiet) | Some(PowerProfile::Eco) => None,
-        _ => Some(PowerProfile::from_index(
-            BATTERY_PROFILE.load(Ordering::Relaxed),
-        )),
+        Some(current) if current == battery_target => None,
+        _ => Some(battery_target),
     }
 }
 
@@ -358,6 +383,70 @@ mod tests {
             desired_profile(false, Some(PowerProfile::Eco), Some(5)),
             None,
             "Eco is already at or below Quiet's conservation level"
+        );
+    }
+
+    /// The bug this guards against: with the AC target set to Balanced, a
+    /// machine already on Balanced was re-applied every time the grace window
+    /// expired (the mode key blinked about once a minute), because only
+    /// Performance/Turbo counted as "already compliant" on AC.
+    #[test]
+    fn ac_leaves_the_configured_target_alone_whatever_tier_it_is() {
+        assert_eq!(
+            desired_profile_for(
+                true,
+                Some(PowerProfile::Balanced),
+                None,
+                PowerProfile::Balanced,
+                PowerProfile::Quiet
+            ),
+            None
+        );
+        assert_eq!(
+            desired_profile_for(
+                true,
+                Some(PowerProfile::Quiet),
+                None,
+                PowerProfile::Quiet,
+                PowerProfile::Quiet
+            ),
+            None
+        );
+        // Still moves off a different low tier towards the target.
+        assert_eq!(
+            desired_profile_for(
+                true,
+                Some(PowerProfile::Quiet),
+                None,
+                PowerProfile::Balanced,
+                PowerProfile::Quiet
+            ),
+            Some(PowerProfile::Balanced)
+        );
+    }
+
+    #[test]
+    fn battery_leaves_the_configured_target_alone_whatever_tier_it_is() {
+        assert_eq!(
+            desired_profile_for(
+                false,
+                Some(PowerProfile::Performance),
+                Some(50),
+                PowerProfile::Turbo,
+                PowerProfile::Performance
+            ),
+            None
+        );
+        // The critical-battery floor still wins over the configured target.
+        assert_eq!(
+            desired_profile_for(
+                false,
+                Some(PowerProfile::Performance),
+                Some(10),
+                PowerProfile::Turbo,
+                PowerProfile::Performance
+            ),
+            Some(PowerProfile::Quiet)
         );
     }
 
