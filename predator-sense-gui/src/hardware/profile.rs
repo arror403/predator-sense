@@ -34,6 +34,9 @@ pub fn keep_fan_auto_in_performance() -> bool {
 // wattage) keeps working exactly as before.
 static MANAGE_CPU_POWER: AtomicBool = AtomicBool::new(true);
 
+/// Set once the GPU refused a power-limit write as unsupported by its vBIOS.
+static GPU_POWER_LIMIT_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+
 pub fn set_manage_cpu_power(v: bool) {
     MANAGE_CPU_POWER.store(v, Ordering::Relaxed);
 }
@@ -919,11 +922,29 @@ pub fn set_profile(profile: PowerProfile) -> Result<(), String> {
     // either, or the profile page would claim success while the GPU watt
     // silently stayed wherever it was, the exact "not supported" false
     // success bug already fixed once in the manual slider (ui/gpu_page.rs).
-    if let Err(e) = crate::hardware::gpu::set_power_limit_clamped(s.gpu_watts) {
-        crate::hardware::applog::error(&format!(
-            "GPU power limit for profile {} not applied: {e}",
+    // Once the vBIOS has refused a power-limit write as unsupported it will
+    // refuse every later one too, so remember that and stop retrying: the
+    // retry itself is harmless, but logging it as an error on every profile
+    // switch buried real problems under a message about a known limitation.
+    if GPU_POWER_LIMIT_UNSUPPORTED.load(Ordering::Relaxed) {
+        crate::hardware::applog::info(&format!(
+            "GPU power limit for profile {} skipped: this GPU's vBIOS does not expose it",
             profile.to_id()
         ));
+    } else if let Err(e) = crate::hardware::gpu::set_power_limit_clamped(s.gpu_watts) {
+        if e.contains("not supported") {
+            GPU_POWER_LIMIT_UNSUPPORTED.store(true, Ordering::Relaxed);
+            crate::hardware::applog::info(&format!(
+                "GPU power limit for profile {} not applied - unsupported by this GPU's vBIOS, \
+                 will not retry this session: {e}",
+                profile.to_id()
+            ));
+        } else {
+            crate::hardware::applog::error(&format!(
+                "GPU power limit for profile {} not applied: {e}",
+                profile.to_id()
+            ));
+        }
     }
 
     apply_firmware_profile(profile);
