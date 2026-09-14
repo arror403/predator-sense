@@ -23,7 +23,17 @@ pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// Where the log lives.
+///
+/// `PREDATOR_SENSE_LOG_DIR` redirects it. That exists for this module's own
+/// test, which deletes the log, forces a rotation by appending five megabytes
+/// and then asserts on the result - all of which it used to do to the real
+/// file in the user's home, so running the test suite wiped whatever had been
+/// captured and left a five megabyte file of padding behind.
 fn log_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("PREDATOR_SENSE_LOG_DIR") {
+        return PathBuf::from(dir);
+    }
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
     base.join("predator-sense")
 }
@@ -84,6 +94,18 @@ mod tests {
 
     #[test]
     fn writes_and_rotates() {
+        // Never the real log directory: this test deletes the log and pads it
+        // past the rotation threshold, which in a user's home destroys exactly
+        // the history the log exists to keep.
+        let scratch = std::env::temp_dir().join(format!(
+            "predator-sense-applog-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&scratch);
+        fs::create_dir_all(&scratch).unwrap();
+        std::env::set_var("PREDATOR_SENSE_LOG_DIR", &scratch);
+        assert_eq!(log_dir(), scratch, "the test must not touch the real log");
+
         set_enabled(true);
         let _ = fs::remove_file(log_path());
         for i in 1..=3 { let _ = fs::remove_file(log_dir().join(format!("app.log.{}", i))); }
@@ -112,5 +134,8 @@ mod tests {
         let _ = fs::remove_file(log_path());
         info("should not appear");
         assert!(!log_path().exists(), "disabled logging must not create the file");
+
+        std::env::remove_var("PREDATOR_SENSE_LOG_DIR");
+        let _ = fs::remove_dir_all(&scratch);
     }
 }
