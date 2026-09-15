@@ -183,46 +183,24 @@ fn run_installation(
     service_btn: gtk::Button,
     on_complete: Rc<dyn Fn()>,
 ) {
-    // Step 1: Dependencies
+    // Step 1: any obviously missing build tool is worth a heads-up in the
+    // log, but no longer something this page tries to install itself (see
+    // `setup::reload_kernel_module`'s doc comment) - DKMS surfaces its own
+    // clear error below if something is genuinely missing.
     mark_step(&steps[0], "running");
-    let missing = {
-        let deps = check_deps_list();
-        deps
-    };
+    let missing = check_deps_list();
     if !missing.is_empty() {
         append_log(&log_tv, &tf("setup_installing_deps", &[&missing.join(", ")]));
-        let result = setup::install_dependencies(&missing);
-        append_log(&log_tv, &result.details);
-        if !result.success {
-            mark_step(&steps[0], "failed");
-            set_status_msg(&status_label, &result.message, true);
-            button.set_sensitive(true);
-            button.set_label(t("try_again"));
-            return;
-        }
     }
     mark_step(&steps[0], "done");
 
-    // Step 2: Compile
+    // Steps 2+3: build and load the module together, in one privileged call.
     mark_step(&steps[1], "running");
     append_log(&log_tv, t("setup_compiling_module"));
-    let compile = setup::compile_module();
-    append_log(&log_tv, &compile.details);
-    if !compile.success {
-        mark_step(&steps[1], "failed");
-        set_status_msg(&status_label, &compile.message, true);
-        button.set_sensitive(true);
-        button.set_label(t("try_again"));
-        return;
-    }
-    mark_step(&steps[1], "done");
-
-    // Step 3: Load
-    mark_step(&steps[2], "running");
-    append_log(&log_tv, t("setup_loading_module"));
-    let load = setup::load_module();
-    append_log(&log_tv, &load.details);
-    if load.success {
+    let result = setup::reload_kernel_module();
+    append_log(&log_tv, &result.details);
+    if result.success {
+        mark_step(&steps[1], "done");
         mark_step(&steps[2], "done");
         set_status_msg(&status_label, t("setup_install_complete"), false);
         service_btn.set_visible(true);
@@ -234,8 +212,8 @@ fn run_installation(
             on_complete();
         });
     } else {
-        mark_step(&steps[2], "failed");
-        set_status_msg(&status_label, &load.message, true);
+        mark_step(&steps[1], "failed");
+        set_status_msg(&status_label, &result.message, true);
         button.set_sensitive(true);
         button.set_label(t("try_again"));
     }

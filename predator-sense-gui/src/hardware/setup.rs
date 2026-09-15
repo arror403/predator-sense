@@ -126,157 +126,60 @@ fn check_build_dependencies() -> Vec<String> {
     missing
 }
 
-/// Install missing build dependencies (requires root)
-pub fn install_dependencies(missing: &[String]) -> SetupResult {
-    let packages = missing.join(" ");
-    let output = Command::new("apt-get")
-        .args(["install", "-y"])
-        .args(missing)
-        .output();
-
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            SetupResult {
-                success: out.status.success(),
-                message: if out.status.success() {
-                    tf("setup_deps_installed", &[&packages])
-                } else {
-                    t("setup_deps_failed").to_string()
-                },
-                details: format!("{}\n{}", stdout, stderr),
-            }
-        }
-        Err(e) => SetupResult {
-            success: false,
-            message: tf("setup_err_apt_exec", &[&e.to_string()]),
-            details: String::new(),
-        },
-    }
-}
-
-/// Compile the facer kernel module
-pub fn compile_module() -> SetupResult {
-    let repo_dir = match find_repo_dir() {
-        Some(d) => d,
-        None => {
-            return SetupResult {
-                success: false,
-                message: t("setup_err_repo_not_found").to_string(),
-                details: t("setup_err_facer_src_not_found").to_string(),
-            }
-        }
-    };
-
-    let kernel_dir = repo_dir.join("kernel");
-
-    // Run make clean first
-    let _ = Command::new("make")
-        .arg("clean")
-        .current_dir(&kernel_dir)
-        .output();
-
-    // Compile
-    let output = Command::new("make")
-        .current_dir(&kernel_dir)
-        .output();
-
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            let ko_exists = repo_dir.join("kernel").join("facer.ko").exists();
-
-            SetupResult {
-                success: out.status.success() && ko_exists,
-                message: if out.status.success() && ko_exists {
-                    t("setup_compile_success").to_string()
-                } else {
-                    t("setup_compile_failed").to_string()
-                },
-                details: format!("{}\n{}", stdout, stderr),
-            }
-        }
-        Err(e) => SetupResult {
-            success: false,
-            message: tf("setup_err_compile_exec", &[&e.to_string()]),
-            details: String::new(),
-        },
-    }
-}
-
-/// Unload the stock acer_wmi and load facer module
-pub fn load_module() -> SetupResult {
-    let repo_dir = match find_repo_dir() {
-        Some(d) => d,
-        None => {
-            return SetupResult {
-                success: false,
-                message: t("setup_err_repo_not_found").to_string(),
-                details: String::new(),
-            }
-        }
-    };
-
-    let ko_path = repo_dir.join("kernel").join("facer.ko");
-    if !ko_path.exists() {
+/// Builds and loads the facer kernel module through the real installer
+/// binary's `--reload-module` step (DKMS-based, distro-aware package
+/// manager detection, the same 82-test-covered path `--install` itself
+/// uses), instead of hand-rolled `make`/`insmod`/`rmmod`/`apt-get` calls.
+///
+/// This replaces three functions that were never actually reachable
+/// correctly (issue #58, TarEssa): `apt-get` is Debian/Ubuntu-only (this
+/// repo also supports Fedora/Arch/openSUSE), none of `apt-get`, `make` in
+/// `/opt/predator-sense/kernel` (root-owned once installed), `rmmod` or
+/// `insmod` were ever run with the root privilege they require - so this
+/// path failed with a permission error on every distro, for every user who
+/// ever hit it, the GUI process itself is never root. Same
+/// pkexec-the-installer-binary pattern [`install_service`] already used
+/// correctly for its own `--reload-module` call.
+pub fn reload_kernel_module() -> SetupResult {
+    let installer = PathBuf::from(userspace_path::INSTALLER)
+        .is_file()
+        .then(|| PathBuf::from(userspace_path::INSTALLER))
+        .or_else(|| {
+            let repo = find_repo_dir()?;
+            ["release", "debug"]
+                .into_iter()
+                .map(|profile| {
+                    repo.join("installer/target")
+                        .join(profile)
+                        .join(predator_sense_protocol::binary::INSTALLER)
+                })
+                .find(|candidate| candidate.is_file())
+        });
+    let Some(installer) = installer else {
         return SetupResult {
             success: false,
-            message: t("setup_err_ko_not_found").to_string(),
+            message: t("setup_script_not_found").to_string(),
             details: String::new(),
         };
-    }
+    };
 
-    let mut log = String::new();
+    // SAFETY: geteuid has no preconditions.
+    let output = if unsafe { libc::geteuid() } == 0 {
+        Command::new(&installer)
+            .arg(installer_cli::RELOAD_MODULE_ARGUMENT)
+            .output()
+    } else {
+        Command::new("pkexec")
+            .arg(&installer)
+            .arg(installer_cli::RELOAD_MODULE_ARGUMENT)
+            .output()
+    };
 
-    // Remove existing character devices if any
-    let _ = Command::new("rm").args(["-f", "/dev/acer-gkbbl-0", "/dev/acer-gkbbl-static-0"]).output();
-
-    // Unload stock acer_wmi
-    let rmmod = Command::new("rmmod").arg("acer_wmi").output();
-    match &rmmod {
+    match output {
         Ok(out) => {
-            log.push_str(&format!(
-                "rmmod acer_wmi: {}\n{}",
-                if out.status.success() { "OK" } else { "falhou (pode estar OK)" },
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        Err(e) => log.push_str(&format!("rmmod erro: {}\n", e)),
-    }
-
-    // Also try to remove facer if loaded
-    let _ = Command::new("rmmod").arg("facer").output();
-
-    // Ensure dependencies are loaded
-    for dep in &["wmi", "sparse-keymap", "video", "platform_profile"] {
-        let _ = Command::new("modprobe").arg(dep).output();
-    }
-
-    // Insert facer module
-    let insmod = Command::new("insmod")
-        .arg(ko_path.to_str().unwrap())
-        .output();
-
-    match insmod {
-        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            log.push_str(&format!("insmod facer.ko: {}\n{}",
-                if out.status.success() { "OK" } else { "falhou" },
-                stderr
-            ));
-
-            // Wait a moment for devices to appear
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
             let devices_ok = Path::new("/dev/acer-gkbbl-0").exists();
-
-            // Get dmesg for facer
-            if let Ok(dmesg) = Command::new("dmesg").args(["--since", "30 seconds ago"]).output() {
-                log.push_str(&format!("\ndmesg:\n{}", String::from_utf8_lossy(&dmesg.stdout)));
-            }
-
             SetupResult {
                 success: out.status.success() && devices_ok,
                 message: if devices_ok {
@@ -286,13 +189,13 @@ pub fn load_module() -> SetupResult {
                 } else {
                     tf("setup_module_load_failed", &[stderr.trim()])
                 },
-                details: log,
+                details: format!("{}\n{}", stdout, stderr),
             }
         }
         Err(e) => SetupResult {
             success: false,
             message: tf("setup_err_load_exec", &[&e.to_string()]),
-            details: log,
+            details: String::new(),
         },
     }
 }
@@ -355,32 +258,9 @@ pub fn install_service() -> SetupResult {
     }
 }
 
-/// Full automatic setup: dependencies -> compile -> load
+/// Full automatic setup: build and load the module in one step (see
+/// [`reload_kernel_module`] - DKMS handles dependency detection, compiling
+/// and loading together, atomically).
 pub fn full_setup() -> Vec<SetupResult> {
-    let mut results = Vec::new();
-
-    // Step 1: Check and install dependencies
-    let missing = check_build_dependencies();
-    if !missing.is_empty() {
-        let dep_result = install_dependencies(&missing);
-        let success = dep_result.success;
-        results.push(dep_result);
-        if !success {
-            return results;
-        }
-    }
-
-    // Step 2: Compile
-    let compile_result = compile_module();
-    let success = compile_result.success;
-    results.push(compile_result);
-    if !success {
-        return results;
-    }
-
-    // Step 3: Load module
-    let load_result = load_module();
-    results.push(load_result);
-
-    results
+    vec![reload_kernel_module()]
 }
