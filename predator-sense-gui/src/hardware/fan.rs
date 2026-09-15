@@ -147,6 +147,31 @@ pub fn set_pwm_auto() -> Result<(), String> {
     Ok(())
 }
 
+/// Which temperature the software curve should answer to.
+///
+/// The hotter of the two, because the curve drives one speed for both fans and
+/// the discrete GPU is the half that was ignored entirely: a machine loading
+/// the GPU with an idle CPU got no fan response at all, on every model, which
+/// is the dangerous direction of that bug.
+///
+/// Deliberately not a per-fan curve. Whether the two fans are thermally
+/// independent is a property of each chassis's heatsink, and several Acer
+/// designs share heatpipes across both dies, where driving the GPU fan from
+/// GPU temperature alone would starve the CPU under load. This app runs on
+/// hardware that cannot all be measured, so it takes the safe reading rather
+/// than assuming a layout.
+///
+/// A `None` GPU is the common case, not an error: no discrete GPU, no
+/// `nvidia-smi`, or an AMD card. A dGPU parked in D3cold can report `0`, which
+/// simply loses the comparison.
+pub fn curve_input_temp(cpu: Option<f64>, gpu: Option<f64>) -> Option<f64> {
+    match (cpu, gpu) {
+        (Some(cpu), Some(gpu)) => Some(cpu.max(gpu)),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
 /// The 6 fixed temperature breakpoints (<45/<55/<65/<75/<85/85+ °C) the
 /// software auto-curve steps through. Not user-editable, only the percent
 /// each step applies is (see `config::fan_curve_points`, issue #59).
@@ -214,5 +239,41 @@ mod tests {
         assert_eq!(fan_curve_pct(70.0, &steps), 70);
         assert_eq!(fan_curve_pct(80.0, &steps), 90);
         assert_eq!(fan_curve_pct(90.0, &steps), 100);
+    }
+
+    #[test]
+    fn the_hotter_die_drives_the_curve() {
+        assert_eq!(curve_input_temp(Some(50.0), Some(80.0)), Some(80.0));
+        assert_eq!(curve_input_temp(Some(85.0), Some(40.0)), Some(85.0));
+    }
+
+    #[test]
+    fn one_sensor_is_enough() {
+        // No discrete GPU, no nvidia-smi, or an AMD card.
+        assert_eq!(curve_input_temp(Some(60.0), None), Some(60.0));
+        assert_eq!(curve_input_temp(None, Some(60.0)), Some(60.0));
+    }
+
+    #[test]
+    fn a_parked_gpu_reporting_zero_loses() {
+        assert_eq!(curve_input_temp(Some(55.0), Some(0.0)), Some(55.0));
+    }
+
+    #[test]
+    fn no_reading_means_the_fans_are_left_alone() {
+        assert_eq!(curve_input_temp(None, None), None);
+    }
+
+    #[test]
+    fn the_gpu_half_now_reaches_the_curve() {
+        // The bug this fixes: an idle CPU beside a hot GPU asked for 25%.
+        let steps = DEFAULT_FAN_CURVE;
+        let idle_cpu = Some(40.0);
+        let hot_gpu = Some(84.0);
+        assert_eq!(
+            fan_curve_pct(curve_input_temp(idle_cpu, hot_gpu).unwrap(), &steps),
+            80
+        );
+        assert_eq!(fan_curve_pct(idle_cpu.unwrap(), &steps), 25);
     }
 }
