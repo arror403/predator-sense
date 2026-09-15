@@ -328,6 +328,12 @@ pub(crate) fn run() -> AppResult {
         }
     };
 
+    // Polls between attempts to reopen a device that went away. The poll
+    // interval is timing::HOTKEY_POLL_MS (5 s), so this retries about every
+    // 30 s: fast enough that a module reload or a replug is not noticed, slow
+    // enough that a genuinely absent node costs one open() a minute.
+    const REOPEN_EVERY_POLLS: u8 = 6;
+
     // O terceiro campo marca o EC HID. Guardar um indice separado seria um bug:
     // devices sao removidos quando desconectam, e os indices dos seguintes
     // deslizam - fazendo o "indice do EC" apontar para um teclado.
@@ -384,7 +390,16 @@ pub(crate) fn run() -> AppResult {
     // key itself.
     let mut last_mode_activation = last_activation;
     let mut last_suspend_offset = suspend_offset();
-    while !devices.is_empty() {
+    // Devices that went away, kept so they can be picked up again. A node
+    // disappearing is routine rather than terminal: a facer reload removes
+    // and recreates its input device (so does every DKMS rebuild after a
+    // kernel upgrade, and --reload-module), a USB keyboard can be replugged,
+    // and a Bluetooth one reconnects. Dropping such a device permanently
+    // leaves whatever it served dead - the mode key or the PredatorSense key -
+    // with the daemon still running and nothing to say it is half deaf.
+    let mut lost: Vec<(PathBuf, bool)> = Vec::new();
+    let mut reopen_countdown = REOPEN_EVERY_POLLS;
+    while !devices.is_empty() || !lost.is_empty() {
         let mut poll_fds = devices
             .iter()
             .map(|(_, file, _)| libc::pollfd {
@@ -436,7 +451,8 @@ pub(crate) fn run() -> AppResult {
                     "Dispositivo {} foi desconectado",
                     devices[index].0.display()
                 ));
-                devices.remove(index);
+                let (path, _, is_ec) = devices.remove(index);
+                lost.push((path, is_ec));
                 continue;
             }
             if events & libc::POLLIN == 0 {
@@ -455,7 +471,8 @@ pub(crate) fn run() -> AppResult {
                     Ok(false) => {}
                     Err(error) => {
                         logger.error(format!("Leitura do EC falhou: {error}"));
-                        devices.remove(index);
+                        let (path, _, is_ec) = devices.remove(index);
+                        lost.push((path, is_ec));
                     }
                 }
                 continue;
@@ -483,8 +500,28 @@ pub(crate) fn run() -> AppResult {
                         "Leitura de {} falhou: {error}",
                         devices[index].0.display()
                     ));
-                    devices.remove(index);
+                    let (path, _, is_ec) = devices.remove(index);
+                    lost.push((path, is_ec));
                 }
+            }
+        }
+
+        // Reopening is attempted on a timer, not on every poll: with the node
+        // genuinely absent this would otherwise be an open() per poll
+        // interval for as long as the machine runs.
+        if !lost.is_empty() {
+            reopen_countdown -= 1;
+            if reopen_countdown == 0 {
+                reopen_countdown = REOPEN_EVERY_POLLS;
+                lost.retain(|(path, is_ec)| match File::open(path) {
+                    Ok(file) => {
+                        logger.info(format!("Dispositivo {} reconectado", path.display()));
+                        devices.push((path.clone(), file, *is_ec));
+                        false
+                    }
+                    // Still gone, or still root-only: keep waiting quietly.
+                    Err(_) => true,
+                });
             }
         }
     }
