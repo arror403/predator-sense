@@ -279,9 +279,10 @@ enum InstallStage {
     DesktopEntry,
     HotkeyService,
     KernelModule,
+    KeyboardHwdbFix,
 }
 
-const INSTALL_STAGES: [InstallStage; 12] = [
+const INSTALL_STAGES: [InstallStage; 13] = [
     InstallStage::Dependencies,
     InstallStage::Headers,
     InstallStage::Release,
@@ -294,6 +295,7 @@ const INSTALL_STAGES: [InstallStage; 12] = [
     InstallStage::DesktopEntry,
     InstallStage::HotkeyService,
     InstallStage::KernelModule,
+    InstallStage::KeyboardHwdbFix,
 ];
 
 impl InstallStage {
@@ -311,6 +313,7 @@ impl InstallStage {
             Self::DesktopEntry => Message::StepDesktop,
             Self::HotkeyService => Message::StepHotkey,
             Self::KernelModule => Message::StepModule,
+            Self::KeyboardHwdbFix => Message::StepKeyboardHwdb,
         }
     }
 
@@ -328,6 +331,7 @@ impl InstallStage {
             Self::DesktopEntry => installer.install_desktop_entry(),
             Self::HotkeyService => installer.install_hotkey_service(),
             Self::KernelModule => installer.install_kernel_module(),
+            Self::KeyboardHwdbFix => installer.install_keyboard_hwdb_fix(),
         }
     }
 }
@@ -1337,6 +1341,26 @@ impl Installer {
         run(command::UDEVADM, ["trigger"])
     }
 
+    /// Fn+F9/F10 keyboard-illumination keys on the PH315-54 are mapped to
+    /// screen brightness instead at the kernel/evdev level (issue #64,
+    /// arror403): `systemd`'s upstream `hwdb.d/60-keyboard.hwdb` has an entry
+    /// for the sibling `PH315-52` but none for `PH315-54`, confirmed with
+    /// `evtest` before/after against the rule below. Not a predator-sense
+    /// bug (the app never reads these key codes), but shipping the fix here
+    /// gets it to users immediately rather than waiting on it to land
+    /// upstream and flow through distro packages.
+    ///
+    /// A no-op on every other model - see [`keyboard_hwdb_fix_for`].
+    fn install_keyboard_hwdb_fix(&self) -> AppResult {
+        let Some(rule) = keyboard_hwdb_fix_for(&product_model()) else {
+            return Ok(());
+        };
+        write_text(Path::new(path::KEYBOARD_HWDB_FIX), rule, mode::REGULAR_FILE)?;
+        run_optional(command::SYSTEMD_HWDB, ["update"]);
+        run_optional(command::UDEVADM, ["trigger"]);
+        Ok(())
+    }
+
     fn install_desktop_entry(&self) -> AppResult {
         let desktop = format!(
             "[Desktop Entry]\n\
@@ -1835,6 +1859,7 @@ impl Installer {
             path::MODPROBE_CONFIG,
             path::HID_UDEV_RULE,
             path::EC_UDEV_RULE,
+            path::KEYBOARD_HWDB_FIX,
             path::DESKTOP_ENTRY,
             path::ICON,
             path::POLKIT_POLICY,
@@ -1846,6 +1871,7 @@ impl Installer {
         }
         fs::remove_dir_all(path::INSTALL_DIR).ok();
         let _ = run_quiet(command::UDEVADM, ["control", "--reload-rules"]);
+        run_optional(command::SYSTEMD_HWDB, ["update"]);
         run_optional(command::UPDATE_DESKTOP_DATABASE, [path::APPLICATIONS_DIR]);
         run_optional(command::GTK_UPDATE_ICON_CACHE, [path::ICON_THEME]);
 
@@ -1969,6 +1995,26 @@ fn product_model() -> String {
     fs::read_to_string(path::PRODUCT_NAME)
         .map(|value| value.trim().to_string())
         .unwrap_or_else(|_| "unknown".into())
+}
+
+/// The udev hwdb rule content for [`Installer::install_keyboard_hwdb_fix`],
+/// gated to the one model this was confirmed against (issue #64) - `None`
+/// on anything else, since a rule for the wrong keyboard controller would
+/// be a guess, not a verified fix. Pure and file-system-free so the gating
+/// is testable without touching `/etc`.
+fn keyboard_hwdb_fix_for(product: &str) -> Option<&'static str> {
+    if !product.contains("PH315-54") {
+        return None;
+    }
+    // hwdb syntax requires each property line indented by exactly one
+    // space - a backslash-newline source continuation would strip that
+    // along with the line's own leading whitespace, so the "\n " here is
+    // deliberate, not decorative indentation.
+    Some(concat!(
+        "evdev:atkbd:dmi:bvn*:bvr*:bd*:svnAcer*:pnPredator*PH*315-54:*\n",
+        " KEYBOARD_KEY_ef=kbdillumup\n",
+        " KEYBOARD_KEY_f0=kbdillumdown\n",
+    ))
 }
 
 #[cfg(test)]
@@ -2212,5 +2258,24 @@ mod tests {
             assert_ne!(fs::metadata(alias).unwrap().ino(), canonical_inode);
             assert_eq!(fs::read_to_string(alias).unwrap(), "multicall binary");
         }
+    }
+
+    #[test]
+    fn keyboard_hwdb_fix_is_scoped_to_the_one_confirmed_model() {
+        assert!(keyboard_hwdb_fix_for("Predator PH315-54").is_some());
+        // DMI product_name doesn't always come back trimmed to exactly the
+        // marketing name - contains(), not equality, is deliberate.
+        assert!(keyboard_hwdb_fix_for("Acer Predator PH315-54_998_2.007").is_some());
+        assert!(keyboard_hwdb_fix_for("Predator PH315-52").is_none());
+        assert!(keyboard_hwdb_fix_for("Predator PH315-55").is_none());
+        assert!(keyboard_hwdb_fix_for("unknown").is_none());
+    }
+
+    #[test]
+    fn keyboard_hwdb_fix_content_matches_the_confirmed_rule() {
+        let rule = keyboard_hwdb_fix_for("Predator PH315-54").unwrap();
+        assert!(rule.contains("pnPredator*PH*315-54:*"));
+        assert!(rule.contains(" KEYBOARD_KEY_ef=kbdillumup"));
+        assert!(rule.contains(" KEYBOARD_KEY_f0=kbdillumdown"));
     }
 }

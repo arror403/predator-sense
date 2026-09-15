@@ -68,6 +68,7 @@ pub(crate) enum Message {
     StepDesktop,
     StepHotkey,
     StepModule,
+    StepKeyboardHwdb,
     LinuwuSenseSkip,
     InstallTitle,
     InstallSuccess,
@@ -141,6 +142,10 @@ pub(crate) const fn text(language: Language, message: Message) -> &'static str {
         Message::StepModule => (
             "Compiling/loading kernel module",
             "Compilando/carregando módulo kernel",
+        ),
+        Message::StepKeyboardHwdb => (
+            "Applying keyboard fix (PH315-54 only)",
+            "Aplicando correção de teclado (só PH315-54)",
         ),
         Message::LinuwuSenseSkip => (
             "Linuwu-Sense detected — leaving its platform driver in place (RGB still works over HID)",
