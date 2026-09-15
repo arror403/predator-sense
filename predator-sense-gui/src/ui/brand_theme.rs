@@ -149,17 +149,21 @@ pub fn accent_hex() -> &'static str {
 /// is currently active, unlike [`accent()`] above, which is the single
 /// color the rest of the app uses for whichever mode *is* active.
 ///
-/// Colors are not picked here - they are measured (dominant hue, weighted by
-/// saturation and brightness, scanning the actual glow pixels) from the
-/// robot artwork itself (`resources/mode/*.png`, the user's own images), the
-/// same "read the real thing instead of guessing" rule this project applies
-/// to hardware. `Eco` has no artwork of its own (only four robots exist,
-/// one per AC-side mode) and reuses Quiet's - both are the
-/// power-saving/green end of the lineup.
+/// Colors for the four AC-side modes are not picked here - they are measured
+/// (dominant hue, weighted by saturation and brightness, scanning the actual
+/// glow pixels) from the robot artwork itself (`resources/mode/*.png`, the
+/// user's own images), the same "read the real thing instead of guessing"
+/// rule this project applies to hardware. `Eco` has no artwork of its own
+/// (only four robots exist, one per AC-side mode; it reuses Quiet's robot),
+/// but keeps its own distinct accent (issue #41, TongkyakHermit: with both
+/// cards visible together on battery and sharing the same robot, an
+/// identical accent made them hard to tell apart at a glance) - a manual
+/// pick, not measured, since there's no unique image to measure it from.
 pub fn accent_for_profile(profile: crate::hardware::profile::PowerProfile) -> Accent {
     use crate::hardware::profile::PowerProfile;
     match profile {
-        PowerProfile::Quiet | PowerProfile::Eco => QUIET_ACCENT,
+        PowerProfile::Quiet => QUIET_ACCENT,
+        PowerProfile::Eco => ECO_ACCENT,
         PowerProfile::Balanced => BALANCED_ACCENT,
         PowerProfile::Performance => PERFORMANCE_ACCENT,
         PowerProfile::Turbo => TURBO_ACCENT,
@@ -169,7 +173,8 @@ pub fn accent_for_profile(profile: crate::hardware::profile::PowerProfile) -> Ac
 fn profile_color_set(profile: crate::hardware::profile::PowerProfile) -> ColorSet {
     use crate::hardware::profile::PowerProfile;
     match profile {
-        PowerProfile::Quiet | PowerProfile::Eco => QUIET_SET,
+        PowerProfile::Quiet => QUIET_SET,
+        PowerProfile::Eco => ECO_SET,
         PowerProfile::Balanced => BALANCED_SET,
         PowerProfile::Performance => PERFORMANCE_SET,
         PowerProfile::Turbo => TURBO_SET,
@@ -179,6 +184,10 @@ fn profile_color_set(profile: crate::hardware::profile::PowerProfile) -> ColorSe
 const QUIET_ACCENT: Accent = Accent {
     bright: (0.337, 0.949, 0.808), // #56f2ce
     dark: (0.225, 0.633, 0.539),
+};
+const ECO_ACCENT: Accent = Accent {
+    bright: (0.435, 0.812, 0.322), // #6fcf52
+    dark: (0.290, 0.541, 0.216),
 };
 const BALANCED_ACCENT: Accent = Accent {
     bright: (0.078, 0.545, 0.976), // #148bf9
@@ -202,6 +211,12 @@ const QUIET_SET: ColorSet = ColorSet {
     dark_hex: "#39a189",
     rgb_decimal: "86, 242, 206",
     bright_hex: "#6ff4d5",
+};
+const ECO_SET: ColorSet = ColorSet {
+    hex: "#6fcf52",
+    dark_hex: "#4a8a37",
+    rgb_decimal: "111, 207, 82",
+    bright_hex: "#80ee5e",
 };
 const BALANCED_SET: ColorSet = ColorSet {
     hex: "#148bf9",
@@ -228,7 +243,7 @@ mod tests {
     use crate::hardware::profile::PowerProfile;
 
     #[test]
-    fn each_mode_gets_its_own_accent_and_eco_borrows_quiets() {
+    fn each_mode_gets_its_own_accent_including_eco() {
         assert_eq!(accent_for_profile(PowerProfile::Quiet).bright, QUIET_ACCENT.bright);
         assert_eq!(
             accent_for_profile(PowerProfile::Balanced).bright,
@@ -239,7 +254,10 @@ mod tests {
             PERFORMANCE_ACCENT.bright
         );
         assert_eq!(accent_for_profile(PowerProfile::Turbo).bright, TURBO_ACCENT.bright);
-        assert_eq!(accent_for_profile(PowerProfile::Eco).bright, QUIET_ACCENT.bright);
+        assert_eq!(accent_for_profile(PowerProfile::Eco).bright, ECO_ACCENT.bright);
+        // Distinct from Quiet even though Eco reuses Quiet's robot artwork -
+        // that's the whole point of issue #41's request.
+        assert_ne!(ECO_ACCENT.bright, QUIET_ACCENT.bright);
     }
 
     #[test]
