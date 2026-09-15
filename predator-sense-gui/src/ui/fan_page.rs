@@ -639,10 +639,12 @@ pub fn build() -> gtk::Box {
         card.append(&desc_label);
 
         // The user's own artwork, one robot per mode, no equivalent for Eco
-        // (only four exist) - matches `accent_for_profile` falling back to
-        // Quiet's color for the same reason. Fixed height, natural width:
-        // all four keep the same portrait aspect ratio, so this alone is
-        // enough to make every robot the same size on screen.
+        // (only four exist, see `profile_robot_resource` above) - its card
+        // simply carries no image, unlike `accent_for_profile` which still
+        // gives Eco its own distinct color (issue #41). Fixed height,
+        // natural width: all four robots keep the same portrait aspect
+        // ratio, so this alone is enough to make every robot the same size
+        // on screen.
         if let Some(resource) = profile_robot_resource(*profile_val) {
             if let Some(path) = crate::ui::window::find_resource(resource) {
                 let robot = gtk::Picture::for_filename(&path);

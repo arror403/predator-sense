@@ -154,11 +154,12 @@ pub fn accent_hex() -> &'static str {
 /// glow pixels) from the robot artwork itself (`resources/mode/*.png`, the
 /// user's own images), the same "read the real thing instead of guessing"
 /// rule this project applies to hardware. `Eco` has no artwork of its own
-/// (only four robots exist, one per AC-side mode; it reuses Quiet's robot),
-/// but keeps its own distinct accent (issue #41, TongkyakHermit: with both
-/// cards visible together on battery and sharing the same robot, an
-/// identical accent made them hard to tell apart at a glance) - a manual
-/// pick, not measured, since there's no unique image to measure it from.
+/// (only four robots exist, one per AC-side mode; its card shows no robot
+/// at all, see `fan_page::profile_robot_resource`) and keeps its own
+/// distinct accent (issue #41, TongkyakHermit: with Eco and Quiet both
+/// visible together on battery, sharing Quiet's accent made them hard to
+/// tell apart at a glance) - a manual pick, not measured, since there's no
+/// unique image to measure it from.
 pub fn accent_for_profile(profile: crate::hardware::profile::PowerProfile) -> Accent {
     use crate::hardware::profile::PowerProfile;
     match profile {
