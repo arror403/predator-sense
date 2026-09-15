@@ -166,6 +166,14 @@ pub struct AppConfig {
     /// which used to live only in that page's local, in-memory state.
     #[serde(default)]
     pub fan_auto_curve_enabled: bool,
+    /// The 6 fan-percent steps of the software auto-curve (issue #59,
+    /// harry42203, PHN16-72): the temperature breakpoints themselves
+    /// (<45/<55/<65/<75/<85/85+ °C) stay fixed, only the percent each step
+    /// applies is user-editable, from Fan Control. Default matches the
+    /// hardcoded curve this replaces exactly, so nobody who never touches
+    /// this setting sees any behavior change.
+    #[serde(default = "default_fan_curve_points")]
+    pub fan_curve_points: [u8; 6],
     /// Last-applied static RGB zone colors (issue #11: nothing persisted this
     /// before, so a full power cycle always reset the keyboard to its default
     /// pulsing effect). Reapplied after login/resume by the Rust hotkey service.
@@ -326,6 +334,10 @@ fn default_rgb_brightness() -> u8 {
     100
 }
 
+fn default_fan_curve_points() -> [u8; 6] {
+    crate::hardware::fan::DEFAULT_FAN_CURVE
+}
+
 fn default_ai_ollama_url() -> String {
     crate::hardware::ai_assistant::DEFAULT_OLLAMA_URL.to_string()
 }
@@ -355,6 +367,7 @@ impl Default for AppConfig {
             coolboost_enabled: false,
             fan_mode: None,
             fan_auto_curve_enabled: false,
+            fan_curve_points: default_fan_curve_points(),
             rgb_static_zones: None,
             rgb_brightness: 100,
             rgb_is_static: true,

@@ -338,10 +338,11 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
             // the previous one is still in flight.
             let applying = Rc::new(Cell::new(false));
             glib::timeout_add_seconds_local(3, move || {
-                if config::load_app_config().fan_auto_curve_enabled && !applying.get() {
+                let cfg = config::load_app_config();
+                if cfg.fan_auto_curve_enabled && !applying.get() {
                     let (cpu, _gpu) = sensors::read_critical_temps();
                     if let Some(t) = cpu {
-                        let pct = crate::hardware::fan::fan_curve_pct(t);
+                        let pct = crate::hardware::fan::fan_curve_pct(t, &cfg.fan_curve_points);
                         applying.set(true);
                         let applying_done = applying.clone();
                         background::run(

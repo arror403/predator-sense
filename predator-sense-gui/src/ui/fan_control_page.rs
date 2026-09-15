@@ -357,6 +357,67 @@ pub fn build() -> gtk::Box {
             let _ = config::save_app_config(&c);
             glib::Propagation::Proceed
         });
+
+        // Per-step editor (issue #59, harry42203): the 6 temperature
+        // breakpoints are fixed, only the percent each step applies is
+        // editable. Enforcement still only reads `config::fan_curve_points`
+        // from the global timer in window.rs - this just edits that value.
+        let edit_title = gtk::Label::new(Some(crate::i18n::t("fan_curve_edit")));
+        edit_title.add_css_class("control-label");
+        edit_title.set_halign(gtk::Align::Center);
+        edit_title.set_margin_top(10);
+        page.append(&edit_title);
+
+        let steps_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        steps_box.set_halign(gtk::Align::Center);
+        steps_box.set_margin_top(4);
+
+        const BREAKPOINT_LABELS: [&str; 6] =
+            ["< 45°C", "< 55°C", "< 65°C", "< 75°C", "< 85°C", "≥ 85°C"];
+        let points = cfg.fan_curve_points;
+        let spin_buttons: Rc<Vec<gtk::SpinButton>> = Rc::new(
+            BREAKPOINT_LABELS
+                .iter()
+                .enumerate()
+                .map(|(i, label)| {
+                    let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                    let lbl = gtk::Label::new(Some(label));
+                    lbl.add_css_class("info-text-dim");
+                    let spin = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
+                    spin.set_value(points[i] as f64);
+                    col.append(&lbl);
+                    col.append(&spin);
+                    steps_box.append(&col);
+                    spin
+                })
+                .collect(),
+        );
+        page.append(&steps_box);
+
+        for (i, spin) in spin_buttons.iter().enumerate() {
+            spin.connect_value_changed(move |s| {
+                let mut c = config::load_app_config();
+                c.fan_curve_points[i] = s.value() as u8;
+                let _ = config::save_app_config(&c);
+            });
+        }
+
+        let reset_btn = gtk::Button::with_label(crate::i18n::t("rgb_reset_default"));
+        reset_btn.add_css_class("secondary-button");
+        reset_btn.set_halign(gtk::Align::Center);
+        reset_btn.set_margin_top(6);
+        page.append(&reset_btn);
+        {
+            let spin_buttons = spin_buttons.clone();
+            reset_btn.connect_clicked(move |_| {
+                let mut c = config::load_app_config();
+                c.fan_curve_points = fan::DEFAULT_FAN_CURVE;
+                let _ = config::save_app_config(&c);
+                for (spin, &pct) in spin_buttons.iter().zip(fan::DEFAULT_FAN_CURVE.iter()) {
+                    spin.set_value(pct as f64);
+                }
+            });
+        }
     } else {
         // No per-fan PWM: explain (no error) that only firmware modes exist.
         let note = gtk::Label::new(Some(crate::i18n::t("fan_no_pwm_note")));

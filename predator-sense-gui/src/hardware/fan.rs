@@ -147,17 +147,25 @@ pub fn set_pwm_auto() -> Result<(), String> {
     Ok(())
 }
 
-/// Simple CPU-temperature to fan-speed curve (percent) for the software
-/// auto-curve toggle on the Fan Control page.
-pub fn fan_curve_pct(temp_c: f64) -> u8 {
-    match temp_c {
-        t if t < 45.0 => 25,
-        t if t < 55.0 => 35,
-        t if t < 65.0 => 50,
-        t if t < 75.0 => 65,
-        t if t < 85.0 => 80,
-        _ => 100,
+/// The 6 fixed temperature breakpoints (<45/<55/<65/<75/<85/85+ °C) the
+/// software auto-curve steps through. Not user-editable, only the percent
+/// each step applies is (see `config::fan_curve_points`, issue #59).
+const FAN_CURVE_BREAKPOINTS_C: [f64; 5] = [45.0, 55.0, 65.0, 75.0, 85.0];
+
+/// Original hardcoded curve, kept as the default for anyone who never opens
+/// the new per-step editor in Fan Control.
+pub const DEFAULT_FAN_CURVE: [u8; 6] = [25, 35, 50, 65, 80, 100];
+
+/// CPU-temperature to fan-speed curve (percent) for the software auto-curve
+/// toggle on the Fan Control page, using the given 6 step percentages
+/// (`config::fan_curve_points`) against the fixed breakpoints above.
+pub fn fan_curve_pct(temp_c: f64, steps: &[u8; 6]) -> u8 {
+    for (i, &breakpoint) in FAN_CURVE_BREAKPOINTS_C.iter().enumerate() {
+        if temp_c < breakpoint {
+            return steps[i];
+        }
     }
+    steps[5]
 }
 
 /// Read current CPU/GPU fan PWM as percentage (0-100), if available.
@@ -172,4 +180,39 @@ pub fn get_pwm_percent() -> Option<(u8, u8)> {
         ((cpu * PERCENT_MAX) / PWM_VALUE_MAX) as u8,
         ((gpu * PERCENT_MAX) / PWM_VALUE_MAX) as u8,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_curve_matches_the_original_hardcoded_steps() {
+        let steps = DEFAULT_FAN_CURVE;
+        assert_eq!(fan_curve_pct(20.0, &steps), 25);
+        assert_eq!(fan_curve_pct(44.9, &steps), 25);
+        assert_eq!(fan_curve_pct(45.0, &steps), 35);
+        assert_eq!(fan_curve_pct(54.9, &steps), 35);
+        assert_eq!(fan_curve_pct(55.0, &steps), 50);
+        assert_eq!(fan_curve_pct(64.9, &steps), 50);
+        assert_eq!(fan_curve_pct(65.0, &steps), 65);
+        assert_eq!(fan_curve_pct(74.9, &steps), 65);
+        assert_eq!(fan_curve_pct(75.0, &steps), 80);
+        assert_eq!(fan_curve_pct(84.9, &steps), 80);
+        assert_eq!(fan_curve_pct(85.0, &steps), 100);
+        assert_eq!(fan_curve_pct(99.0, &steps), 100);
+    }
+
+    #[test]
+    fn a_custom_curve_is_honored_at_every_step() {
+        // harry42203's complaint (issue #59): quieter at low load, more
+        // aggressive at high load than the default.
+        let steps = [10, 15, 30, 70, 90, 100];
+        assert_eq!(fan_curve_pct(30.0, &steps), 10);
+        assert_eq!(fan_curve_pct(50.0, &steps), 15);
+        assert_eq!(fan_curve_pct(60.0, &steps), 30);
+        assert_eq!(fan_curve_pct(70.0, &steps), 70);
+        assert_eq!(fan_curve_pct(80.0, &steps), 90);
+        assert_eq!(fan_curve_pct(90.0, &steps), 100);
+    }
 }
