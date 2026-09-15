@@ -340,8 +340,12 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
             glib::timeout_add_seconds_local(3, move || {
                 let cfg = config::load_app_config();
                 if cfg.fan_auto_curve_enabled && !applying.get() {
-                    let (cpu, _gpu) = sensors::read_critical_temps();
-                    if let Some(t) = cpu {
+                    // Whichever die is hotter. The GPU reading was dropped
+                    // here, so a GPU-bound load with an idle CPU got no fan
+                    // response at all. See fan::curve_input_temp for why this
+                    // stays one speed for both fans.
+                    let (cpu, gpu) = sensors::read_critical_temps();
+                    if let Some(t) = crate::hardware::fan::curve_input_temp(cpu, gpu) {
                         let pct = crate::hardware::fan::fan_curve_pct(t, &cfg.fan_curve_points);
                         applying.set(true);
                         let applying_done = applying.clone();
