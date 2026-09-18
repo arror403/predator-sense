@@ -3586,6 +3586,11 @@ static int acer_platform_profile_setup(struct platform_device *device)
 	return 0;
 }
 
+/* devm_platform_profile_register() ties cleanup to the device, nothing to do here. */
+static void acer_platform_profile_teardown(void)
+{
+}
+
 #else
 static int acer_platform_profile_setup(void)
 {
@@ -3630,6 +3635,22 @@ static int acer_platform_profile_setup(void)
 			ACER_PREDATOR_V4_THERMAL_PROFILE_BALANCED_WMI;
 	}
 	return 0;
+}
+
+/*
+ * Pre-6.14 registers the handler manually (platform_profile_register()), so it
+ * has to be unregistered manually too on module removal. Leaving this out
+ * makes the kernel's platform_profile class keep the old handler after
+ * rmmod/reload, so the next probe on the same boot fails registration with
+ * -EEXIST (fan/mode then look "loaded" in --status but have nothing behind
+ * them until reboot).
+ */
+static void acer_platform_profile_teardown(void)
+{
+	if (platform_profile_support) {
+		platform_profile_remove();
+		platform_profile_support = false;
+	}
 }
 #endif
 
@@ -4375,6 +4396,8 @@ static void acer_platform_remove(struct platform_device *device)
 		acer_led_exit();
 	if (has_cap(ACER_CAP_BRIGHTNESS))
 		acer_backlight_exit();
+
+	acer_platform_profile_teardown();
 
 	acer_rfkill_exit();
 }
