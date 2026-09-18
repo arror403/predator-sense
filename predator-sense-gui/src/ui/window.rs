@@ -283,7 +283,16 @@ fn build_main_ui(app: &adw::Application, window: &gtk::ApplicationWindow) {
         // every start. Off the GTK thread since each helper write costs
         // roughly 150ms and can trigger a polkit prompt.
         let coolboost_enabled = cfg.coolboost_enabled;
-        let fan_mode = cfg.fan_mode.clone();
+        // Not while the software curve owns the fans. Reapplying the saved EC
+        // preset here and then letting the curve timer below take the fans
+        // back about three seconds later is two owners writing the same
+        // hardware on every launch, and the preset never survives long enough
+        // to be the thing the user asked for. CoolBoost is unaffected: it is a
+        // separate EC byte the curve never touches.
+        let fan_mode = cfg
+            .fan_mode
+            .clone()
+            .filter(|_| !cfg.fan_auto_curve_enabled);
         if crate::hardware::capabilities::get().ec && (coolboost_enabled || fan_mode.is_some()) {
             background::run(
                 move || {
